@@ -55,8 +55,12 @@ typedef struct IpvideoContext {
     HpelDSPContext hdsp;
     AVFrame *second_last_frame;
     AVFrame *last_frame;
+    uint8_t frame_format;
+    const unsigned char *skip_map;
+    int skip_map_size;
     const unsigned char *decoding_map;
     int decoding_map_size;
+    int video_data_size;
 
     int is_16bpp;
     GetByteContext stream_ptr, mv_ptr;
@@ -999,18 +1003,24 @@ static int ipvideo_decode_frame(AVCodecContext *avctx,
     if (buf_size < 2)
         return AVERROR_INVALIDDATA;
 
-    /* decoding map contains 4 bits of information per 8x8 block */
-    s->decoding_map_size = AV_RL16(avpkt->data);
+    s->frame_format = AV_RB8(avpkt->data);
 
-    /* compressed buffer needs to be large enough to at least hold an entire
-     * decoding map */
-    if (buf_size < s->decoding_map_size + 2)
-        return buf_size;
+    if(s->frame_format == 0x11) {
+        /* Format 0x11 has a decoding map and pixel data */
+        s->video_data_size = AV_RL16(avpkt->data + 1);
+        bytestream2_init(&s->stream_ptr, buf + 3, s->video_data_size);
 
+        /* decoding map contains 4 bits of information per 8x8 block */
+        s->decoding_map_size = AV_RL16(avpkt->data + 3 + s->video_data_size);
+        s->decoding_map = buf + 3 + s->video_data_size + 2;
 
-    s->decoding_map = buf + 2;
-    bytestream2_init(&s->stream_ptr, buf + 2 + s->decoding_map_size,
-                     buf_size - s->decoding_map_size);
+        /* compressed buffer needs to be large enough to at least hold an entire
+         * decoding map */
+        if (buf_size < s->decoding_map_size + 2)
+            return buf_size;
+    } else {
+        av_log(avctx, AV_LOG_ERROR, "Frame type 0x%02X unsupported\n", s->frame_format);
+    }
 
     if ((ret = ff_get_buffer(avctx, frame, AV_GET_BUFFER_FLAG_REF)) < 0)
         return ret;
